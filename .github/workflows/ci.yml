@@ -14,8 +14,36 @@ on:
   schedule:
     - cron: '0 6 * * *'  # Daily 6AM UTC build
 
+env:
+  pythonversion: 3.9
+
 
 jobs:
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: install python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{env.pythonversion}}
+      - name: create local poetry install
+        run: |
+            python -m venv .venv
+            source .venv/bin/activate
+            pip install --upgrade pip setuptools
+            python -m pip install poetry
+            poetry install
+      - uses: trailofbits/gh-action-pip-audit@v1.0.5
+        with:
+          virtual-environment: .venv
+          ignore-vulns: |
+            GHSA-w596-4wvx-j9j6 # subversion related git dep, dependency for pytest. This is no impact here.
+            GHSA-2p9h-ccw7-33gf # invalid ddos comment on the cleo package
+            GHSA-hcpj-qp55-gfph
+            GHSA-29gw-9793-fvw7 # ipython test dep, not in release
 
   lint:
     name: Linter
@@ -25,9 +53,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Setup Python 3.9
-        uses: actions/setup-python@v4.0.0
+        uses: actions/setup-python@v4
         with:
-          python-version: 3.9
+          python-version: ${{env.pythonversion}}
         #----------------------------------------------
         #  -----  install & configure poetry  -----
         #----------------------------------------------
@@ -73,7 +101,7 @@ jobs:
     strategy:
       matrix:
         os: [ ubuntu-latest ]
-        pyver: [ "3.6", "3.7", "3.8", "3.9", "3.10", "pypy-3.8", "pypy-3.7" ]
+        pyver: ["3.7", "3.8", "3.9", "3.10", "3.11", "pypy-3.8", "pypy-3.7" ]
         redisstack: [ "latest" ]
       fail-fast: false
     services:
@@ -97,7 +125,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Setup Python ${{ matrix.pyver }}
-        uses: actions/setup-python@v4.0.0
+        uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.pyver }}
         #----------------------------------------------
@@ -147,54 +175,3 @@ jobs:
           flags: unit
           env_vars: OS
           fail_ci_if_error: false
-
-  deploy:
-    name: Deploy
-    runs-on: ubuntu-latest
-    needs: test-unix
-    # Run only on pushing a tag
-    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Setup Python 3.9
-        uses: actions/setup-python@v4.0.0
-        with:
-          python-version: 3.9
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-          installer-parallel: true
-          #----------------------------------------------
-          #       load cached venv if cache exists
-          #----------------------------------------------
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v3
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-        #----------------------------------------------
-        # Make sync version of library (redis_om)
-        #----------------------------------------------
-      - name: Make sync version of library (redis_om)
-        run: make sync
-        #----------------------------------------------
-        # install dependencies if cache does not exist
-        #----------------------------------------------
-      - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root
-        #----------------------------------------------
-        # install your root project, if required
-        #----------------------------------------------
-      - name: Install library
-        run: poetry install --no-interaction
-      - name: PyPI upload
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          make upload

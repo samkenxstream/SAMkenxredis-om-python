@@ -25,7 +25,9 @@ from aredis_om import (
 # We need to run this check as sync code (during tests) even in async mode
 # because we call it in the top-level module scope.
 from redis_om import has_redis_json
-from tests.conftest import py_test_mark_asyncio
+
+from .conftest import py_test_mark_asyncio
+
 
 if not has_redis_json():
     pytestmark = pytest.mark.skip
@@ -216,7 +218,37 @@ async def test_all_pks(address, m, redis):
     async for pk in await m.Member.all_pks():
         pk_list.append(pk)
 
-    assert len(pk_list) == 2
+    assert sorted(pk_list) == sorted([member.pk, member1.pk])
+
+
+@py_test_mark_asyncio
+async def test_all_pks_with_complex_pks(key_prefix):
+    class City(JsonModel):
+        name: str
+
+        class Meta:
+            global_key_prefix = key_prefix
+            model_key_prefix = "city"
+
+    city1 = City(
+        pk="ca:on:toronto",
+        name="Toronto",
+    )
+
+    await city1.save()
+
+    city2 = City(
+        pk="ca:qc:montreal",
+        name="Montreal",
+    )
+
+    await city2.save()
+
+    pk_list = []
+    async for pk in await City.all_pks():
+        pk_list.append(pk)
+
+    assert sorted(pk_list) == ["ca:on:toronto", "ca:qc:montreal"]
 
 
 @py_test_mark_asyncio
@@ -291,10 +323,37 @@ async def test_saves_many_explicit_transaction(address, m):
     async with m.Member.db().pipeline(transaction=True) as pipeline:
         await m.Member.add(members, pipeline=pipeline)
         assert result == [member1, member2]
-        assert await pipeline.execute() == ["OK", "OK"]
+        assert await pipeline.execute() == [True, True]
 
         assert await m.Member.get(pk=member1.pk) == member1
         assert await m.Member.get(pk=member2.pk) == member2
+
+
+@py_test_mark_asyncio
+async def test_delete_many_implicit_pipeline(address, m):
+    member1 = m.Member(
+        first_name="Andrew",
+        last_name="Brookins",
+        email="a@example.com",
+        join_date=today,
+        address=address,
+        age=38,
+    )
+    member2 = m.Member(
+        first_name="Kim",
+        last_name="Brookins",
+        email="k@example.com",
+        join_date=today,
+        address=address,
+        age=34,
+    )
+    members = [member1, member2]
+    result = await m.Member.add(members)
+    assert result == [member1, member2]
+    result = await m.Member.delete_many(members)
+    assert result == 2
+    with pytest.raises(NotFoundError):
+        await m.Member.get(pk=member2.pk)
 
 
 async def save(members):
@@ -775,3 +834,18 @@ async def test_schema(m, key_prefix):
         m.Member.redisearch_schema()
         == f"ON JSON PREFIX 1 {key_prefix} SCHEMA $.pk AS pk TAG SEPARATOR | $.first_name AS first_name TAG SEPARATOR | $.last_name AS last_name TAG SEPARATOR | $.email AS email TAG SEPARATOR |  $.age AS age NUMERIC $.bio AS bio TAG SEPARATOR | $.bio AS bio_fts TEXT $.address.pk AS address_pk TAG SEPARATOR | $.address.city AS address_city TAG SEPARATOR | $.address.postal_code AS address_postal_code TAG SEPARATOR | $.address.note.pk AS address_note_pk TAG SEPARATOR | $.address.note.description AS address_note_description TAG SEPARATOR | $.orders[*].pk AS orders_pk TAG SEPARATOR | $.orders[*].items[*].pk AS orders_items_pk TAG SEPARATOR | $.orders[*].items[*].name AS orders_items_name TAG SEPARATOR |"
     )
+
+
+@py_test_mark_asyncio
+async def test_count(members, m):
+    # member1, member2, member3 = members
+    actual_count = await m.Member.find(
+        (m.Member.first_name == "Andrew") & (m.Member.last_name == "Brookins")
+        | (m.Member.last_name == "Smith")
+    ).count()
+    assert actual_count == 2
+
+    actual_count = await m.Member.find(
+        m.Member.first_name == "Kim", m.Member.last_name == "Brookins"
+    ).count()
+    assert actual_count == 1
